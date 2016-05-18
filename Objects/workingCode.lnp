@@ -1,0 +1,15 @@
+--cpu Cortex-M4.fp
+".\objects\startup_rvmdk.o"
+".\objects\main.o"
+".\objects\motorcontrol.o"
+".\objects\pwm.o"
+".\objects\pwmforservo.o"
+".\objects\systickdelay.o"
+".\objects\timerinitialization.o"
+".\objects\uartstdio.o"
+".\objects\gyrompu6050.o"
+".\objects\i2c.o"
+"C:\ti\TivaWare_C_Series-2.1.2.111\driverlib\rvmdk\driverlib.lib"
+--ro-base 0x00000000 --entry 0x00000000 --rw-base 0x20000000 --entry Reset_Handler --first __Vectors --strict --summary_stderr --info summarysizes --map --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list ".\Listings\workingCode.map" -o .\Objects\workingCode.axf
