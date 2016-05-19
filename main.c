@@ -30,7 +30,7 @@
 #include "pwmForServo.h"
 #include "gyroMpu6050.h"
 
-#define absoluteVal(my_val) ((my_val) < 0) ? -(my_val) : (my_val)
+//#define absoluteVal(my_val) ((my_val) < 0) ? -(my_val) : (my_val)
 
 #define MIN_TO_SEC 60         // 1 minute = 60 seconds
 #define SEC_TO_MSEC 1000      // 1 second = 1000 miliseconds
@@ -42,10 +42,10 @@
 #define R 0.022f               // radius of the wheel: 2.2 cm
 #define L 0.075f               // the distance from the center of mass to the omni-wheel: 7.5 cm
 
-
+#define estimationDegree 4
+#define futureCycle 40.0f //0.1ms look to the future
 
 uint32_t systemClock;
-int STOOOP;
 
 typedef struct 
 {
@@ -61,15 +61,24 @@ typedef struct
 	float Kd;
 }pid_t;
 
-pid_t pos_ang,ang;
 
-volatile float xMe,yMe,xOp,yOp,angle, angleOp;
-volatile float xMe_, yMe_, xOp_, yOp_, angle_;
+//PID and Motor Control Variables
+pid_t pos_ang,ang;
+uint32_t pidPeriod=80000;
+
 float w[3] = {0,0,0};
 bool dir[3] = {0,0,0};
-void convertFromRobotVelToMotorVel(float Vx, float Vy, float Vang, float theta, float *ptr);
 float angle_target;
+//////////////////////////////////
+
+//Raspberry Pi Communication
+volatile float xMe,yMe,xOp,yOp,angle, angleOp;
+volatile float xMe_, yMe_, xOp_, yOp_, angle_;
 bool flag = 0;
+///////////////////////////////////
+
+
+//Position Control Variables
 const int angle_offset = 0;
 const int array_length = 11;
 int route_x[array_length] = {60,40,60,40,60,40,55,40,60,40,50};
@@ -79,50 +88,65 @@ float pwm_offset = 250.0f;
 float torque = 814.0f;
 float pos_error = 0;
 float xFire = 50.0f, yFire= 75.0f;
-//bool mode = 0;
+
+
 int mode = 0; // 0: Escape maneuvers
 //				  // 1: Go to (xFire, yFire)
 //				  // 2: Point forward
 //				  // 3: Aim at target
 
-//Error Variables
+//Communication Error Variables
 uint32_t errorPeriod=24000000;
 
-//Variables of firing mechanism
+//Variables of firing mechanism communication
 char mssg[3];
 char cmpStr[3];
+/////////////////////////////////////////
 
-int servoHold=2000;//2000;
+//Firing Servo Control Variables
+int servoHold=2000;
 int servoMin=300;
-int servoFire=2750;
+int servoFire=2850;
 
 int servoPosition;
 
 int direction=1;
 int didIFire=0;
 bool fireFlag;
+//////////////////////////////////////////
 
+//Firing Timer Variables
 float maxAngleError=15.0f;
 uint32_t waitForFirePeriod=80000000*0.5;
 
+/////////////////////////////////
+
+//Initialization Functions
 void UART2Setup(uint32_t baudRate);
 void UART4Setup(uint32_t baudRate);
 
-uint32_t pidPeriod=80000;
 void wTimer3BInit(uint32_t period); // Controller timer init
 void timer1AInit(uint32_t period);
 void timer1AHandler(void);
+void convertFromRobotVelToMotorVel(float Vx, float Vy, float Vang, float theta, float *ptr);
 
-void ctrlHandler(void)
+
+//ESTIMATION VARIABLES
+float msFifo[2][estimationDegree]; //0th index show x measurement
+
+float coeffs[2][estimationDegree];
+
+float xEst,yEst;
+
+float fC1,fC2,fC3;
+/////////////////////////
+
+void ctrlHandler(void)//PID is calculated here
 {
 	ROM_TimerIntClear(WTIMER3_BASE, TIMER_TIMB_TIMEOUT);
-	
-	//GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,GPIO_PIN_0);
+
 	if (mode == 0)
 	{
-		/*Motor1(0, dir[0]);
-		Motor2(0, dir[1]);
-		Motor3(0, dir[2]);*/
 		
 		pos_ang.error = 0;
 
@@ -145,99 +169,133 @@ void ctrlHandler(void)
 	//		pos.last_proportional = 0;
 		}
 	}
-	else if (mode == 1) // Go to (xFire, yFire) w/ constant speed
+	else //When the signal comes, begin estimation immediately
 	{
-		angle_target = atan2f(yFire-yMe, xFire-xMe) * RAD_TO_DEG;
-		convertFromRobotVelToMotorVel(1500, 0, 0, angle_target-angle+angle_offset, w);
-		Motor1(w[0], dir[0]);
-		Motor2(w[1], dir[1]);
-		Motor3(w[2], dir[2]);
-		pos_error = sqrt((yFire-yMe)*(yFire-yMe) + (xFire-xMe)*(xFire-xMe));
-		if(pos_error < 4) 
-		{
-			Motor1(0, dir[0]);
-			Motor2(0, dir[1]);
-			Motor3(0, dir[2]);
-			mode = 2;
-		}
-	}
-	else if (mode == 2) // Aim forward
-	{
-		ang.proportional = 90 - angle;
-		if(ang.proportional > 180)
-			ang.proportional -= 360;
-		else if(ang.proportional <= -180)
-			ang.proportional += 360;
-		if (ang.proportional > 0)
-			convertFromRobotVelToMotorVel(0, 0, 400, angle_offset, w);
-		else
-			convertFromRobotVelToMotorVel(0, 0, -400, angle_offset, w);
-		Motor1(w[0], dir[0]);
-		Motor2(w[1], dir[1]);
-		Motor3(w[2], dir[2]);
+		//Estimation
+		msFifo[0][3]=msFifo[0][2];
+		msFifo[1][3]=msFifo[1][2];
+		msFifo[0][2]=msFifo[0][1];
+		msFifo[1][2]=msFifo[1][1];
+		msFifo[0][1]=msFifo[0][0];
+		msFifo[1][1]=msFifo[1][0];
+		msFifo[0][0]=xOp;
+		msFifo[1][0]=yOp;
 		
-		if (absoluteVal(ang.proportional) < 10)
+		coeffs[0][0]=msFifo[0][0];
+		coeffs[1][0]=msFifo[1][0];
+		
+		coeffs[0][1]=0.1667f*(-11.0f*msFifo[0][0]+18.0f*msFifo[0][1]-9.0f*msFifo[0][2]+2.0f*msFifo[0][3]);
+		coeffs[1][1]=0.1667f*(-11.0f*msFifo[1][0]+18.0f*msFifo[1][1]-9.0f*msFifo[1][2]+2.0f*msFifo[1][3]);
+		
+		coeffs[0][2]=0.5f*(2*msFifo[0][0]-5*msFifo[0][1]+4*msFifo[0][2]-1*msFifo[0][3]);
+		coeffs[1][2]=0.5f*(2*msFifo[1][0]-5*msFifo[1][1]+4*msFifo[1][2]-1*msFifo[1][3]);
+		
+		coeffs[0][3]=0.1667f*(-1.0f*msFifo[0][0]+3.0f*msFifo[0][1]-3.0f*msFifo[0][2]+1.0f*msFifo[0][3]);
+		coeffs[1][3]=0.1667f*(-1.0f*msFifo[1][0]+3.0f*msFifo[1][1]-3.0f*msFifo[1][2]+1.0f*msFifo[1][3]);
+		
+		
+		xEst=coeffs[0][0]-fC1*coeffs[0][1]+fC2*coeffs[0][2]-fC3*coeffs[0][3];
+		yEst=coeffs[1][0]-fC1*coeffs[1][1]+fC2*coeffs[1][2]-fC3*coeffs[1][3];
+		//Mode Controls
+		if (mode == 1) // Go to (xFire, yFire) w/ constant speed
 		{
-			mode = 3;
-			ROM_TimerEnable(TIMER1_BASE, TIMER_A); //wait for small angle error timer
+			angle_target = atan2f(yFire-yMe, xFire-xMe) * RAD_TO_DEG;
+			convertFromRobotVelToMotorVel(1500, 0, 0, angle_target-angle+angle_offset, w);
+			Motor1(w[0], dir[0]);
+			Motor2(w[1], dir[1]);
+			Motor3(w[2], dir[2]);
+			pos_error = sqrt((yFire-yMe)*(yFire-yMe) + (xFire-xMe)*(xFire-xMe));
+			if(pos_error < 8) //Prev value:4 
+			{
+				Motor1(0, dir[0]);
+				Motor2(0, dir[1]);
+				Motor3(0, dir[2]);
+				mode = 2;
+			}
+		}
+		else if (mode == 2) // Aim forward
+		{
+			ang.proportional = 90.0f - angle;
+			if(ang.proportional > 180.0f)
+				ang.proportional -= 360.0f;
+			else if(ang.proportional <= -180.0f)
+				ang.proportional += 360.0f;
+				
+			if (ang.proportional > 0)
+				convertFromRobotVelToMotorVel(0, 0, 400, angle_offset, w);
+			else
+				convertFromRobotVelToMotorVel(0, 0, -400, angle_offset, w);
+				
+				
+			Motor1(w[0], dir[0]);
+			Motor2(w[1], dir[1]);
+			Motor3(w[2], dir[2]);
+			if(ang.proportional<0)ang.proportional=-1.0f*ang.proportional;
+			if (ang.proportional < 10.0f)
+			{
+				mode = 3;				
+				ROM_TimerEnable(TIMER1_BASE, TIMER_A); //wait for small angle error timer
+			}
+		}
+		else if (mode == 3)
+		{
+			angleOp = atan2f(yOp-yMe,xOp-xMe) * RAD_TO_DEG;
+			ang.proportional = angleOp - angle;
+
+			if(ang.proportional > 180)
+				ang.proportional -= 360;
+			else if(ang.proportional <= -180)
+				ang.proportional += 360;
+
+			ang.integral += ang.proportional;
+			ang.derivative = ang.proportional - ang.last_proportional;
+			ang.last_proportional = ang.proportional;	
+			ang.error = ang.Kp*ang.proportional + ang.Ki*ang.integral + ang.Kd*ang.derivative;			
+
+
+			if(ang.proportional<0)
+				ang.proportional=-1.0f*ang.proportional;
+			
+			if(ang.proportional>maxAngleError)
+				ROM_TimerLoadSet(TIMER1_BASE, TIMER_A, waitForFirePeriod-1);
+				
+				
+			convertFromRobotVelToMotorVel(0, 0, ang.error, angle_offset, w);
+			Motor1(w[0], dir[0]);
+			Motor2(w[1], dir[1]);
+			Motor3(w[2], dir[2]);
 		}
 	}
-	else if (mode == 3){
-		angleOp = atan2f(yOp-yMe,xOp-xMe) * RAD_TO_DEG;
-		ang.proportional = angleOp - angle;
-
-		if(ang.proportional > 180)
-			ang.proportional -= 360;
-		else if(ang.proportional <= -180)
-			ang.proportional += 360;
-
-		ang.integral += ang.proportional;
-		ang.derivative = ang.proportional - ang.last_proportional;
-		ang.last_proportional = ang.proportional;	
-		ang.error = ang.Kp*ang.proportional + ang.Ki*ang.integral + ang.Kd*ang.derivative;			
-
-		if(absoluteVal(ang.proportional)>maxAngleError)
-		{
-			ROM_TimerLoadSet(TIMER1_BASE, TIMER_A, waitForFirePeriod-1);
-		}
-		convertFromRobotVelToMotorVel(0, 0, ang.error, angle_offset, w);
-		Motor1(w[0], dir[0]);
-		Motor2(w[1], dir[1]);
-		Motor3(w[2], dir[2]);
-	}
-	
-	//GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,!(GPIO_PIN_0));
 }
 
-void fireHandler(void)
+void fireHandler(void)//Phone communication handler
 {
 	UARTIntClear(UART2_BASE,UART_INT_RX);
 	
 	mssg[0]=UARTCharGetNonBlocking(UART2_BASE);
 	mssg[1]=UARTCharGetNonBlocking(UART2_BASE);
 	mssg[2]='\0';
-	if(!strcmp(mssg,cmpStr))//speed=((speed+50)<=3500)?speed+50:3500;
-	{
-		//fireFlag=true;
-		
-		/*pwmB5Generate(2000);
-		sysTickDelay(500);
-		pwmB4Generate(servoFire);
-		sysTickDelay(500);
-		pwmB4Generate(servoHold);
-		ROM_TimerEnable(TIMER2_BASE, TIMER_A);
-		pwmB5Generate(1250);*/
+	if(!strcmp(mssg,cmpStr))
 		mode = 1;
-		//Motor1(0,0);
-		//Motor2(0,0);
-		//Motor3(0,0);
-		//while(1);
-		
-		
-		//ROM_TimerEnable(TIMER1_BASE, TIMER_A);//wait for small angle error timer
-	}
 }
-void UART4Handler()
+void timer1AHandler(void)//It controls if we can look at the opponent
+{
+	ROM_TimerIntClear(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
+	ROM_TimerDisable(TIMER1_BASE, TIMER_A);
+	//GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,GPIO_PIN_0);
+	pwmB5Generate(2000);
+	SysCtlDelay((SysCtlClockGet()/6));//sysTickDelay(500);
+	pwmB4Generate(servoFire);
+	SysCtlDelay((SysCtlClockGet()/6));//sysTickDelay(500);
+	pwmB4Generate(servoHold);
+	
+	//ROM_TimerEnable(TIMER2_BASE, TIMER_A);
+	pwmB5Generate(1250);
+	mode=0;
+	didIFire=1;
+	//GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,!GPIO_PIN_0);
+}
+void UART4Handler()//RASPI communication handler
 {
   UARTIntClear(UART4_BASE,UART_INT_RX);
 	if(!flag)
@@ -288,7 +346,7 @@ int main(void)
 	systemClock=SysCtlClockGet();
 	sysTickSetup(0x00FFFFFF);
 	ROM_IntMasterDisable();
-	/*
+	/*//UART STDIO
 	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
 	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
 	
@@ -299,17 +357,20 @@ int main(void)
 	UARTStdioConfig(0, 115200, SysCtlClockGet());*/
 	
 	
-	UART4Setup((uint32_t)9600);
+	UART4Setup((uint32_t)9600); //RASPI
+	UART2Setup(9600);				//PHONE
+	
 	
 	PWM_Init();                       // Initialize PF1,PF2 and PF3 for PWM operation
 	MotorInput_Init();
-	wTimer1BInit(errorPeriod);
+	wTimer1BInit(errorPeriod);		//Communication error detection timer
 	
 	
-	UART2Setup(9600);
 	cmpStr[0]='O';
 	cmpStr[1]='K';
-	cmpStr[2]='\0';
+	cmpStr[2]='\0';			//Message coming from the phone
+	
+	//Firing: brushless B5, servo b4
 	servoPosition=servoHold;
 	
 	pwmModuleInit();
@@ -317,8 +378,10 @@ int main(void)
 	pwmB4Generate(servoMin);
 	sysTickDelay(1500);
 	pwmB4Generate(servoHold);
-	//timer2AInit((uint32_t)1600000);
+	//timer2AInit((uint32_t)1600000); //It was the time which controls the position of the servo motor
 	
+	
+	//PID Constants
 	pos_ang.integral = 0;
 	pos_ang.last_proportional = 0;
 	pos_ang.Kp = 1;
@@ -329,27 +392,26 @@ int main(void)
 	ang.last_proportional = 0;
 	ang.Kp = 18;
 	ang.Ki = 0.0000075;
-	ang.Kd = 1000;
+	ang.Kd = 100;
+	
+	
+	//FOR ESTIMATION
+	fC1=futureCycle;
+	fC2=futureCycle*futureCycle;
+	fC3=futureCycle*futureCycle*futureCycle;
 	
 	wTimer3BInit(pidPeriod);//PID Timer Init
 	timer1AInit(waitForFirePeriod);
-	
 	
 	//Gyro Initialization
 	gyroTimerInit();
 	
 	//Debug led
-	GPIOPinTypeGPIOOutput(GPIO_PORTD_BASE,GPIO_PIN_0|GPIO_PIN_1);
-	GPIOPadConfigSet(GPIO_PORTF_BASE,GPIO_PIN_0|GPIO_PIN_1,GPIO_STRENGTH_2MA,GPIO_PIN_TYPE_STD);
-	
-	/*GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,GPIO_PIN_0);
-	SysCtlDelay((systemClock>>1)/3);
-	GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,!(GPIO_PIN_0));
-	SysCtlDelay((systemClock>>1)/3);*/
+	//GPIOPinTypeGPIOOutput(GPIO_PORTD_BASE,GPIO_PIN_0|GPIO_PIN_1);
+	//GPIOPadConfigSet(GPIO_PORTF_BASE,GPIO_PIN_0|GPIO_PIN_1,GPIO_STRENGTH_2MA,GPIO_PIN_TYPE_STD);
 	
 	ROM_IntMasterEnable();
 	
-	//didIFire=1;
 	while(true)
 	{
 		if(didIFire)
@@ -377,7 +439,7 @@ int main(void)
 	}
 }
 
-void UART2Setup(uint32_t baudRate)
+void UART2Setup(uint32_t baudRate) //PHONE
 {
   ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_UART2);
   ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOD);
@@ -404,7 +466,7 @@ void UART2Setup(uint32_t baudRate)
   SysCtlDelay(100);
 }
 
-void UART4Setup(uint32_t baudRate)
+void UART4Setup(uint32_t baudRate) //RASPI
 {
 	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_UART4);
 	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOC);
@@ -429,7 +491,7 @@ void UART4Setup(uint32_t baudRate)
 	SysCtlDelay(100);
 }
 
-void wTimer3BInit(uint32_t period)
+void wTimer3BInit(uint32_t period)//PID
 {
 	// Controller Timer
 	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_WTIMER3);
@@ -443,25 +505,7 @@ void wTimer3BInit(uint32_t period)
 	ROM_TimerIntEnable(WTIMER3_BASE, TIMER_TIMB_TIMEOUT);
 }
 
-void timer1AHandler(void)
-{
-	ROM_TimerIntClear(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
-	ROM_TimerDisable(TIMER1_BASE, TIMER_A);
-	//GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,GPIO_PIN_0);
-	pwmB5Generate(2000);
-	SysCtlDelay((SysCtlClockGet()/6));//sysTickDelay(500);
-	pwmB4Generate(servoFire);
-	SysCtlDelay((SysCtlClockGet()/6));//sysTickDelay(500);
-	pwmB4Generate(servoHold);
-	
-	//ROM_TimerEnable(TIMER2_BASE, TIMER_A);
-	pwmB5Generate(1250);
-	mode=0;
-	didIFire=1;
-	//GPIOPinWrite(GPIO_PORTD_BASE,GPIO_PIN_0,!GPIO_PIN_0);
-}
-
-void timer1AInit(uint32_t period)
+void timer1AInit(uint32_t period)//AIM and FIRE
 {
 	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER1);
 	ROM_TimerConfigure(TIMER1_BASE, TIMER_CFG_PERIODIC);
