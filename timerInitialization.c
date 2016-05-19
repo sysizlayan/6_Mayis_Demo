@@ -2,7 +2,6 @@
 
 uint32_t timerCounter;
 bool state;
-extern int STOOOP;
 
 
 extern char mssg[3];
