@@ -43,7 +43,7 @@
 #define L 0.075f               // the distance from the center of mass to the omni-wheel: 7.5 cm
 
 #define estimationDegree 4
-#define futureCycle 40.0f //0.1ms look to the future
+#define futureCycle 12.0f //0.1ms look to the future
 
 uint32_t systemClock;
 
@@ -72,7 +72,7 @@ float angle_target;
 //////////////////////////////////
 
 //Raspberry Pi Communication
-volatile float xMe,yMe,xOp,yOp,angle, angleOp;
+volatile float xMe,yMe,xOp,yOp,angle, angleOp,xOp1,yOp1;
 volatile float xMe_, yMe_, xOp_, yOp_, angle_;
 bool flag = 0;
 ///////////////////////////////////
@@ -117,7 +117,7 @@ bool fireFlag;
 
 //Firing Timer Variables
 float maxAngleError=15.0f;
-uint32_t waitForFirePeriod=80000000*0.5;
+uint32_t waitForFirePeriod=(uint32_t)(80000000*0.3f);
 
 /////////////////////////////////
 
@@ -136,9 +136,12 @@ float msFifo[2][estimationDegree]; //0th index show x measurement
 
 float coeffs[2][estimationDegree];
 
-float xEst,yEst;
+float xEst,yEst,xEst1,yEst1;
 
 float fC1,fC2,fC3;
+
+float measurementFIFO[2][5];
+float estimationFIFO[2][8];
 /////////////////////////
 
 void ctrlHandler(void)//PID is calculated here
@@ -172,12 +175,15 @@ void ctrlHandler(void)//PID is calculated here
 	else //When the signal comes, begin estimation immediately
 	{
 		//Estimation
-		msFifo[0][3]=msFifo[0][2];
+		/*msFifo[0][3]=msFifo[0][2];
 		msFifo[1][3]=msFifo[1][2];
+		
 		msFifo[0][2]=msFifo[0][1];
 		msFifo[1][2]=msFifo[1][1];
+		
 		msFifo[0][1]=msFifo[0][0];
 		msFifo[1][1]=msFifo[1][0];
+		
 		msFifo[0][0]=xOp;
 		msFifo[1][0]=yOp;
 		
@@ -195,7 +201,7 @@ void ctrlHandler(void)//PID is calculated here
 		
 		
 		xEst=coeffs[0][0]-fC1*coeffs[0][1]+fC2*coeffs[0][2]-fC3*coeffs[0][3];
-		yEst=coeffs[1][0]-fC1*coeffs[1][1]+fC2*coeffs[1][2]-fC3*coeffs[1][3];
+		yEst=coeffs[1][0]-fC1*coeffs[1][1]+fC2*coeffs[1][2]-fC3*coeffs[1][3];*/
 		//Mode Controls
 		if (mode == 1) // Go to (xFire, yFire) w/ constant speed
 		{
@@ -239,7 +245,10 @@ void ctrlHandler(void)//PID is calculated here
 		}
 		else if (mode == 3)
 		{
-			angleOp = atan2f(yOp-yMe,xOp-xMe) * RAD_TO_DEG;
+			xEst1=(/*estimationFIFO[0][12]+estimationFIFO[0][11]+estimationFIFO[0][10]+estimationFIFO[0][9]+estimationFIFO[0][8]+*/estimationFIFO[0][7]+estimationFIFO[0][6]+estimationFIFO[0][5]+estimationFIFO[0][4]+estimationFIFO[0][3]+estimationFIFO[0][2]+estimationFIFO[0][1]+estimationFIFO[0][0])/8.0f;
+			yEst1=(/*estimationFIFO[1][12]+estimationFIFO[1][11]+estimationFIFO[1][10]+estimationFIFO[1][9]+estimationFIFO[1][8]+*/estimationFIFO[1][7]+estimationFIFO[1][6]+estimationFIFO[1][5]+estimationFIFO[1][4]+estimationFIFO[1][3]+estimationFIFO[1][2]+estimationFIFO[1][1]+estimationFIFO[1][0])/8.0f;
+		
+			angleOp = atan2f(yEst1-yMe,xEst1-xMe) * RAD_TO_DEG;//angleOp = atan2f(yOp-yMe,xOp-xMe) * RAD_TO_DEG;
 			ang.proportional = angleOp - angle;
 
 			if(ang.proportional > 180)
@@ -332,7 +341,107 @@ void UART4Handler()//RASPI communication handler
 			angle = angle_;
 		}
   }
-  //UARTprintf("xop: %d yop: %d xMe: %d yMe: %d angle: %d\r\n",(int)xOp,(int)yOp,(int)xMe,(int)yMe,(int)angle);
+  if(mode!=0)
+  {
+	  /*measurementFIFO[0][12]=measurementFIFO[0][11];
+		measurementFIFO[0][11]=measurementFIFO[0][10];
+		measurementFIFO[0][10]=measurementFIFO[0][9];
+		measurementFIFO[0][9]=measurementFIFO[0][8];
+		measurementFIFO[0][8]=measurementFIFO[0][7];*/
+		/*measurementFIFO[0][7]=measurementFIFO[0][6];
+		measurementFIFO[0][6]=measurementFIFO[0][5];
+		measurementFIFO[0][5]=measurementFIFO[0][4];*/
+		measurementFIFO[0][4]=measurementFIFO[0][3];
+		measurementFIFO[0][3]=measurementFIFO[0][2];
+		measurementFIFO[0][2]=measurementFIFO[0][1];
+		measurementFIFO[0][1]=measurementFIFO[0][0];
+		measurementFIFO[0][0]=xOp;
+		xOp1=(/*measurementFIFO[0][7]+measurementFIFO[0][6]+measurementFIFO[0][5]+*/measurementFIFO[0][4]+measurementFIFO[0][3]+measurementFIFO[0][2]+measurementFIFO[0][1]+measurementFIFO[0][0])/5;
+		/*measurementFIFO[1][12]=measurementFIFO[1][11];
+		measurementFIFO[1][11]=measurementFIFO[1][10];
+		measurementFIFO[1][10]=measurementFIFO[1][9];
+		measurementFIFO[1][9]=measurementFIFO[1][8];
+		measurementFIFO[1][8]=measurementFIFO[1][7];*/
+		/*measurementFIFO[1][7]=measurementFIFO[1][6];
+		measurementFIFO[1][6]=measurementFIFO[1][5];
+		measurementFIFO[1][5]=measurementFIFO[1][4];*/
+		measurementFIFO[1][4]=measurementFIFO[1][3];
+		measurementFIFO[1][3]=measurementFIFO[1][2];
+		measurementFIFO[1][2]=measurementFIFO[1][1];
+		measurementFIFO[1][1]=measurementFIFO[1][0];
+		measurementFIFO[1][0]=yOp;
+		yOp1=(/*measurementFIFO[1][7]+measurementFIFO[1][6]+measurementFIFO[1][5]+*/measurementFIFO[1][4]+measurementFIFO[1][3]+measurementFIFO[1][2]+measurementFIFO[1][1]+measurementFIFO[1][0])/5;
+	  
+	  
+		msFifo[0][3]=msFifo[0][2];
+		msFifo[1][3]=msFifo[1][2];
+		
+		msFifo[0][2]=msFifo[0][1];
+		msFifo[1][2]=msFifo[1][1];
+		
+		msFifo[0][1]=msFifo[0][0];
+		msFifo[1][1]=msFifo[1][0];
+		
+		msFifo[0][0]=xOp1;
+		msFifo[1][0]=yOp1;
+		
+		coeffs[0][0]=msFifo[0][0];
+		coeffs[1][0]=msFifo[1][0];
+		
+		/*coeffs[0][1]=0.1667f*(-11.0f*msFifo[0][0]+18.0f*msFifo[0][1]-9.0f*msFifo[0][2]+2.0f*msFifo[0][3]);
+		coeffs[1][1]=0.1667f*(-11.0f*msFifo[1][0]+18.0f*msFifo[1][1]-9.0f*msFifo[1][2]+2.0f*msFifo[1][3]);
+		
+		coeffs[0][2]=0.5f*(2*msFifo[0][0]-5*msFifo[0][1]+4*msFifo[0][2]-1*msFifo[0][3]);
+		coeffs[1][2]=0.5f*(2*msFifo[1][0]-5*msFifo[1][1]+4*msFifo[1][2]-1*msFifo[1][3]);
+		
+		coeffs[0][3]=0.1667f*(-1.0f*msFifo[0][0]+3.0f*msFifo[0][1]-3.0f*msFifo[0][2]+1.0f*msFifo[0][3]);
+		coeffs[1][3]=0.1667f*(-1.0f*msFifo[1][0]+3.0f*msFifo[1][1]-3.0f*msFifo[1][2]+1.0f*msFifo[1][3]);
+		
+		
+		xEst=coeffs[0][0]-fC1*coeffs[0][1]+fC2*coeffs[0][2]-fC3*coeffs[0][3];
+		yEst=coeffs[1][0]-fC1*coeffs[1][1]+fC2*coeffs[1][2]-fC3*coeffs[1][3];*/
+		
+		
+		coeffs[0][1]=0.5f*(-3.0f*msFifo[0][0]+4.0f*msFifo[0][1]-msFifo[0][2]);//+0.0f*msFifo[0][3]);
+		coeffs[1][1]=0.5f*(-3.0f*msFifo[1][0]+4.0f*msFifo[1][1]-msFifo[1][2]);//+0.0f*msFifo[1][3]);
+		
+		coeffs[0][2]=0.5f*(msFifo[0][0]-2.0f*msFifo[0][1]+msFifo[0][2]);//-1*msFifo[0][3]);
+		coeffs[1][2]=0.5f*(msFifo[1][0]-2.0f*msFifo[1][1]+msFifo[1][2]);//-1*msFifo[1][3]);
+		
+		
+		xEst=coeffs[0][0]-fC1*coeffs[0][1]+fC2*coeffs[0][2];
+		yEst=coeffs[1][0]-fC1*coeffs[1][1]+fC2*coeffs[1][2];
+		
+		
+		/*estimationFIFO[0][12]=estimationFIFO[0][11];
+		estimationFIFO[0][11]=estimationFIFO[0][10];
+		estimationFIFO[0][10]=estimationFIFO[0][9];
+		estimationFIFO[0][9]=estimationFIFO[0][8];
+		estimationFIFO[0][8]=estimationFIFO[0][7];*/
+		estimationFIFO[0][7]=estimationFIFO[0][6];
+		estimationFIFO[0][6]=estimationFIFO[0][5];
+		estimationFIFO[0][5]=estimationFIFO[0][4];
+		estimationFIFO[0][4]=estimationFIFO[0][3];
+		estimationFIFO[0][3]=estimationFIFO[0][2];
+		estimationFIFO[0][2]=estimationFIFO[0][1];
+		estimationFIFO[0][1]=estimationFIFO[0][0];
+		estimationFIFO[0][0]=xEst;
+		
+		/*estimationFIFO[1][12]=estimationFIFO[1][11];
+		estimationFIFO[1][11]=estimationFIFO[1][10];
+		estimationFIFO[1][10]=estimationFIFO[1][9];
+		estimationFIFO[1][9]=estimationFIFO[1][8];
+		estimationFIFO[1][8]=estimationFIFO[1][7];*/
+		estimationFIFO[1][7]=estimationFIFO[1][6];
+		estimationFIFO[1][6]=estimationFIFO[1][5];
+		estimationFIFO[1][5]=estimationFIFO[1][4];
+		estimationFIFO[1][4]=estimationFIFO[1][3];
+		estimationFIFO[1][3]=estimationFIFO[1][2];
+		estimationFIFO[1][2]=estimationFIFO[1][1];
+		estimationFIFO[1][1]=estimationFIFO[1][0];
+		estimationFIFO[1][0]=yEst;
+	  //UARTprintf("xop: %d yop: %d xMe: %d yMe: %d angle: %d\r\n",(int)xOp,(int)yOp,(int)xMe,(int)yMe,(int)angle);
+  }
 }
 
 
@@ -390,9 +499,9 @@ int main(void)
 	
 	ang.integral = 0;
 	ang.last_proportional = 0;
-	ang.Kp = 18;
-	ang.Ki = 0.0000075;
-	ang.Kd = 100;
+	ang.Kp = 16.0f;
+	ang.Ki = 0.0000015f;
+	ang.Kd = 1500.0f;
 	
 	
 	//FOR ESTIMATION
